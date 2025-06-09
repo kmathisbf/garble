@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"go/version"
 	"io"
 	"io/fs"
 	"os"
@@ -26,9 +27,6 @@ const (
 	MagicValueEnv  = "GARBLE_LINK_MAGIC"
 	TinyEnv        = "GARBLE_LINK_TINY"
 	EntryOffKeyEnv = "GARBLE_LINK_ENTRYOFF_KEY"
-
-	versionExt    = ".version"
-	baseSrcSubdir = "src"
 )
 
 //go:embed patches/*/*.patch
@@ -116,7 +114,8 @@ func applyPatches(srcDir, workingDir string, modFiles map[string]bool, patches [
 	// by default treats workingDir as a subfolder of repository, so it will break git apply. Adding --git-dir flag blocks this behavior.
 	cmd := exec.Command("git", "--git-dir", workingDir, "apply", "--verbose")
 	cmd.Dir = workingDir
-	cmd.Env = append(cmd.Env, "LANG=en_US")
+	// Ensure that the output messages are in plain English.
+	cmd.Env = append(cmd.Env, "LC_ALL=C")
 	cmd.Stdin = bytes.NewReader(bytes.Join(patches, []byte("\n")))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -154,8 +153,14 @@ func cachePath(cacheDir string) (string, error) {
 }
 
 func getCurrentVersion(goVersion, patchesVer string) string {
-	return goVersion + " " + patchesVer
+	// Note that we assume that if a Go toolchain reports itself as e.g. go1.24.1,
+	// it really is that upstream Go version with no alterations or edits.
+	// If any modifications are made, it should report itself as e.g. go1.24.1-corp.
+	// The alternative would be to use the content ID hash of the cmd/link binary.
+	return goVersion + " " + patchesVer + "\n"
 }
+
+const versionExt = ".version"
 
 func checkVersion(linkerPath, goVersion, patchesVer string) (bool, error) {
 	versionPath := linkerPath + versionExt
@@ -175,7 +180,7 @@ func writeVersion(linkerPath, goVersion, patchesVer string) error {
 	return os.WriteFile(versionPath, []byte(getCurrentVersion(goVersion, patchesVer)), 0o777)
 }
 
-func buildLinker(workingDir string, overlay map[string]string, outputLinkPath string) error {
+func buildLinker(goRoot, workingDir string, overlay map[string]string, outputLinkPath string) error {
 	file, err := json.Marshal(&struct{ Replace map[string]string }{overlay})
 	if err != nil {
 		return err
@@ -185,7 +190,8 @@ func buildLinker(workingDir string, overlay map[string]string, outputLinkPath st
 		return err
 	}
 
-	cmd := exec.Command("go", "build", "-overlay", overlayPath, "-o", outputLinkPath, "cmd/link")
+	goCmd := filepath.Join(goRoot, "bin", "go")
+	cmd := exec.Command(goCmd, "build", "-overlay", overlayPath, "-o", outputLinkPath, "cmd/link")
 	// Ignore any build settings from the environment or GOENV.
 	// We want to build cmd/link like the rest of the toolchain,
 	// regardless of what build options are set for the current build.
@@ -196,7 +202,7 @@ func buildLinker(workingDir string, overlay map[string]string, outputLinkPath st
 	//   go version -m ~/tip/pkg/tool/linux_amd64/link
 	//
 	// and which can be done from Go via debug/buildinfo.ReadFile.
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(cmd.Environ(),
 		"GOENV=off", "GOOS=", "GOARCH=", "GOEXPERIMENT=", "GOFLAGS=",
 	)
 	// Building cmd/link is possible from anywhere, but to avoid any possible side effects build in a temp directory
@@ -211,11 +217,7 @@ func buildLinker(workingDir string, overlay map[string]string, outputLinkPath st
 }
 
 func PatchLinker(goRoot, goVersion, cacheDir, tempDir string) (string, func(), error) {
-	// rxVersion looks for a version like "go1.19" or "go1.20"
-	rxVersion := regexp.MustCompile(`go\d+\.\d+`)
-	majorGoVersion := rxVersion.FindString(goVersion)
-
-	patchesVer, modFiles, patches, err := loadLinkerPatches(majorGoVersion)
+	patchesVer, modFiles, patches, err := loadLinkerPatches(version.Lang(goVersion))
 	if err != nil {
 		return "", nil, fmt.Errorf("cannot retrieve linker patches: %v", err)
 	}
@@ -248,14 +250,14 @@ func PatchLinker(goRoot, goVersion, cacheDir, tempDir string) (string, func(), e
 		return outputLinkPath, unlock, nil
 	}
 
-	srcDir := filepath.Join(goRoot, baseSrcSubdir)
+	srcDir := filepath.Join(goRoot, "src")
 	workingDir := filepath.Join(tempDir, "linker-src")
 
 	overlay, err := applyPatches(srcDir, workingDir, modFiles, patches)
 	if err != nil {
 		return "", nil, err
 	}
-	if err := buildLinker(workingDir, overlay, outputLinkPath); err != nil {
+	if err := buildLinker(goRoot, workingDir, overlay, outputLinkPath); err != nil {
 		return "", nil, err
 	}
 	if err := writeVersion(outputLinkPath, goVersion, patchesVer); err != nil {

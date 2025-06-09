@@ -7,7 +7,6 @@ import (
 	mathrand "math/rand"
 	"strconv"
 
-	"golang.org/x/exp/rand"
 	"golang.org/x/tools/go/ssa"
 	ah "mvdan.cc/garble/internal/asthelper"
 	"mvdan.cc/garble/internal/literals"
@@ -76,7 +75,7 @@ func (xorHardening) Apply(dispatcher []cfgInfo, ssaRemap map[ssa.Value]ast.Expr,
 	globalKeyName, localKeyName := getRandomName(rnd), getRandomName(rnd)
 
 	firstKey := int(rnd.Int31())
-	secondKey := make([]byte, literals.MinSize+rand.Intn(literals.MinSize)) // make second part of key literals obfuscation friendly
+	secondKey := make([]byte, literals.MinSize+mathrand.Intn(literals.MinSize)) // make second part of key literals obfuscation friendly
 	if _, err := rnd.Read(secondKey); err != nil {
 		panic(err)
 	}
@@ -150,14 +149,11 @@ func (xorHardening) Apply(dispatcher []cfgInfo, ssaRemap map[ssa.Value]ast.Expr,
 type delegateTableHardening struct{}
 
 func (delegateTableHardening) Apply(dispatcher []cfgInfo, ssaRemap map[ssa.Value]ast.Expr, rnd *mathrand.Rand) (ast.Decl, ast.Stmt) {
-	keySize := literals.MinSize + rand.Intn(literals.MinSize)
-	delegateCount := keySize
+	keySize := literals.MinSize + mathrand.Intn(literals.MinSize)
 
 	// Reusing multiple times one decryption function is fine,
 	// but it doesn't make sense to generate more functions than keys.
-	if delegateCount > len(dispatcher) {
-		delegateCount = len(dispatcher)
-	}
+	delegateCount := min(keySize, len(dispatcher))
 
 	delegateKeyIdxs := rnd.Perm(keySize)[:delegateCount]
 	delegateLocalKeys := generateKeys(delegateCount, nil, rnd)
@@ -185,7 +181,7 @@ func (delegateTableHardening) Apply(dispatcher []cfgInfo, ssaRemap map[ssa.Value
 	}
 
 	delegatesAst := make([]ast.Expr, delegateCount)
-	for i := 0; i < delegateCount; i++ {
+	for i := range delegateCount {
 		// Code for single decryption delegate:
 		/*
 			func(i int) int {

@@ -2,7 +2,7 @@
 
 	go install mvdan.cc/garble@latest
 
-Obfuscate Go code by wrapping the Go toolchain. Requires Go 1.20 or later.
+Obfuscate Go code by wrapping the Go toolchain. Requires Go 1.24 or later.
 
 	garble build [build flags] [packages]
 
@@ -157,20 +157,9 @@ to document the current shortcomings of this tool.
   be required by interfaces. This area is a work in progress; see
   [#3](https://github.com/burrowers/garble/issues/3).
 
-* Garble aims to automatically detect which Go types are used with reflection,
-  as obfuscating those types might break your program.
-  Note that Garble obfuscates [one package at a time](#speed),
-  so if your reflection code inspects a type from an imported package,
-  and your program broke, you may need to add a "hint" in the imported package:
-   ```go
-   type Message struct {
-       Command string
-       Args    string
-   }
-
-   // Never obfuscate the Message type.
-   var _ = reflect.TypeOf(Message{})
-   ```
+* Aside from `GOGARBLE` to select patterns of packages to obfuscate,
+  there is no supported way to exclude obfuscating a selection of files or packages.
+  More often than not, a user would want to do this to work around a bug; please file the bug instead.
 
 * Go programs [are initialized](https://go.dev/ref/spec#Program_initialization) one package at a time,
   where imported packages are always initialized before their importers,
@@ -178,7 +167,13 @@ to document the current shortcomings of this tool.
   Since garble obfuscates import paths, this lexical order may change arbitrarily.
 
 * Go plugins are not currently supported; see [#87](https://github.com/burrowers/garble/issues/87).
-* Garble requires `git` to patch the linker. That can be avoided once go-gitdiff supports [non-strict patches](https://github.com/bluekeyes/go-gitdiff/issues/30). 
+
+* Garble requires `git` to patch the linker. That can be avoided once go-gitdiff
+  supports [non-strict patches](https://github.com/bluekeyes/go-gitdiff/issues/30).
+
+* APIs like [`runtime.GOROOT`](https://pkg.go.dev/runtime#GOROOT)
+  and [`runtime/debug.ReadBuildInfo`](https://pkg.go.dev/runtime/debug#ReadBuildInfo)
+  will not work in obfuscated binaries. This [can affect loading timezones](https://github.com/golang/go/issues/51473#issuecomment-2490564684), for example.
 
 ### Contributing
 

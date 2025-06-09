@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
+	"github.com/go-quicktest/qt"
 	"github.com/rogpeppe/go-internal/goproxytest"
 	"github.com/rogpeppe/go-internal/gotooltest"
 	"github.com/rogpeppe/go-internal/testscript"
@@ -41,11 +41,12 @@ func TestMain(m *testing.M) {
 		os.Setenv("GORACE", "atexit_sleep_ms=10")
 	}
 	if os.Getenv("RUN_GARBLE_MAIN") == "true" {
-		os.Exit(main1())
+		main()
+		return
 	}
-	os.Exit(testscript.RunMain(garbleMain{m}, map[string]func() int{
-		"garble": main1,
-	}))
+	testscript.Main(garbleMain{m}, map[string]func(){
+		"garble": main,
+	})
 }
 
 type garbleMain struct {
@@ -69,22 +70,25 @@ func TestScript(t *testing.T) {
 	t.Parallel()
 
 	execPath, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	qt.Assert(t, qt.IsNil(err))
 
 	tempCacheDir := t.TempDir()
 
 	hostCacheDir, err := os.UserCacheDir()
-	if err != nil {
-		t.Fatal(err)
-	}
+	qt.Assert(t, qt.IsNil(err))
 
 	p := testscript.Params{
 		Dir: filepath.Join("testdata", "script"),
 		Setup: func(env *testscript.Env) error {
 			// Use testdata/mod as our module proxy.
 			env.Setenv("GOPROXY", proxyURL)
+
+			// gotoolchain.txtar is one test which wants to reuse GOMODCACHE.
+			out, err := exec.Command("go", "env", "GOMODCACHE").Output()
+			if err != nil {
+				return err
+			}
+			env.Setenv("HOST_GOMODCACHE", strings.TrimSpace(string(out)))
 
 			// We use our own proxy, so avoid sum.golang.org.
 			env.Setenv("GONOSUMDB", "*")
@@ -120,7 +124,7 @@ func TestScript(t *testing.T) {
 		Condition: func(cond string) (bool, error) {
 			switch cond {
 			case "cgo":
-				out, err := exec.Command("go", "env", "CGO_ENABLED").CombinedOutput()
+				out, err := exec.Command("go", "env", "CGO_ENABLED").Output()
 				if err != nil {
 					return false, err
 				}
@@ -141,6 +145,7 @@ func TestScript(t *testing.T) {
 			"generate-literals": generateLiterals,
 			"setenvfile":        setenvfile,
 			"grepfiles":         grepfiles,
+			"setup-go":          setupGo,
 		},
 		UpdateScripts:       *update,
 		RequireExplicitExec: true,
@@ -386,6 +391,25 @@ func grepfiles(ts *testscript.TestScript, neg bool, args []string) {
 	}
 }
 
+func setupGo(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) != 1 {
+		ts.Fatalf("usage: setup-go version")
+	}
+	// Download the version of Go specified as an argument, cache it in GOMODCACHE,
+	// and get its GOROOT directory inside the cache so we can use it.
+	cmd := exec.Command("go", "env", "GOROOT")
+	cmd.Env = append(cmd.Environ(), "GOTOOLCHAIN="+args[0])
+	out, err := cmd.Output()
+	ts.Check(err)
+
+	goroot := strings.TrimSpace(string(out))
+
+	ts.Setenv("PATH", filepath.Join(goroot, "bin")+string(os.PathListSeparator)+ts.Getenv("PATH"))
+	// Remove GOROOT from the environment, as it is unnecessary and gets in the way
+	// when we want to test GOTOOLCHAIN upgrades, which will need different GOROOTs.
+	ts.Setenv("GOROOT", "")
+}
+
 func TestSplitFlagsFromArgs(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -426,9 +450,7 @@ func TestSplitFlagsFromArgs(t *testing.T) {
 			flags, args := splitFlagsFromArgs(test.args)
 			got := [2][]string{flags, args}
 
-			if diff := cmp.Diff(test.want, got); diff != "" {
-				t.Fatalf("splitFlagsFromArgs(%q) mismatch (-want +got):\n%s", test.args, diff)
-			}
+			qt.Assert(t, qt.DeepEquals(got, test.want))
 		})
 	}
 }
@@ -461,10 +483,7 @@ func TestFilterForwardBuildFlags(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			got, _ := filterForwardBuildFlags(test.flags)
-
-			if diff := cmp.Diff(test.want, got); diff != "" {
-				t.Fatalf("filterForwardBuildFlags(%q) mismatch (-want +got):\n%s", test.flags, diff)
-			}
+			qt.Assert(t, qt.DeepEquals(got, test.want))
 		})
 	}
 }
@@ -489,10 +508,7 @@ func TestFlagValue(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			got := flagValue(test.flags, test.flagName)
-			if got != test.want {
-				t.Fatalf("flagValue(%q, %q) got %q, want %q",
-					test.flags, test.flagName, got, test.want)
-			}
+			qt.Assert(t, qt.DeepEquals(got, test.want))
 		})
 	}
 }
